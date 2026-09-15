@@ -1,3 +1,7 @@
+## This repository is DEPRECATED. Go to [CogMaps](https://github.com/merlin-intelligence/cog-maps) for the new version. 
+
+---
+
 The software is licensed under MIT.
 
 The Eigenmind and Merlin Intelligence names, logos and branding are not covered by the MIT license and may not be used without permission.
