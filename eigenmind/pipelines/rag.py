@@ -21,9 +21,10 @@ from eigenmind.config import (
     DOCUMENT_COLORS,
     MAX_CHUNKS,
     METHOD_COLORS,
-    NODE_BASE_SIZE,
-    NODE_SIZE_MULTIPLIER,
+    NODE_MAX_SIZE,
+    NODE_MIN_SIZE,
     PROMPT_NODE_COLOR,
+    PROMPT_NODE_SIZE,
 )
 from eigenmind.core.embeddings import EmbeddingModel
 from eigenmind.graph.exploration import explore_graph_with_initial_set
@@ -46,6 +47,7 @@ class ExplorerArtifacts:
     methods_html: str
     excel_path: str
     ranked_chunks: list[dict] = field(default_factory=list)
+    document_colors: dict[str, str] = field(default_factory=dict)
 
 
 def _generate_filename_from_prompt(prompt: str, extension: str = ".html") -> str:
@@ -55,21 +57,16 @@ def _generate_filename_from_prompt(prompt: str, extension: str = ".html") -> str
 
 
 def _scale_node_sizes(degrees: np.ndarray) -> list[int]:
-    raw = [NODE_BASE_SIZE + d * NODE_SIZE_MULTIPLIER for d in degrees]
-    if not raw:
+    """Map node degrees to a fixed, readable pixel range regardless of how spread out
+    the degree distribution is — an unbounded scale produces oversized nodes when the
+    similarity threshold lets a few nodes accumulate very high degree."""
+    if len(degrees) == 0:
         return []
-    mn, mx = min(raw), max(raw)
-    if mx > mn * 5.0:
-        out = []
-        log_mn, log_mx = np.log(mn + 1), np.log(mx + 1)
-        for s in raw:
-            if log_mx - log_mn > 0:
-                normalized = (np.log(s + 1) - log_mn) / (log_mx - log_mn)
-                out.append(int(mn + normalized * (mn * 4.0)))
-            else:
-                out.append(int(mn))
-        return out
-    return [int(s) for s in raw]
+    mn, mx = float(np.min(degrees)), float(np.max(degrees))
+    if mx == mn:
+        return [NODE_MIN_SIZE for _ in degrees]
+    span = NODE_MAX_SIZE - NODE_MIN_SIZE
+    return [int(NODE_MIN_SIZE + (d - mn) / (mx - mn) * span) for d in degrees]
 
 
 def _extract_themes(text: str, nlp, top_n: int = 5) -> list[str]:
@@ -83,17 +80,40 @@ def _extract_themes(text: str, nlp, top_n: int = 5) -> list[str]:
     return [item for item, _ in Counter(keywords).most_common(top_n)]
 
 
-_PHYSICS = {
+_GRAPH_OPTIONS = {
+    "nodes": {
+        "font": {
+            "size": 18,
+            "face": "arial",
+            "color": "#f5f5f5",
+            "strokeWidth": 3,
+            "strokeColor": "#1a1a1a",
+        },
+        "borderWidth": 2,
+        "borderWidthSelected": 4,
+    },
+    "edges": {
+        "color": {"color": "#5a5a5a", "opacity": 0.45, "inherit": False, "highlight": "#ffd700"},
+        "width": 0.6,
+        "smooth": {"type": "continuous"},
+        "hoverWidth": 1.5,
+    },
     "physics": {
         "solver": "barnesHut",
         "barnesHut": {
-            "gravitationalConstant": -10000, "centralGravity": 0.3,
-            "springLength": 95, "springConstant": 0.04,
-            "damping": 0.09, "avoidOverlap": 0.1,
+            "gravitationalConstant": -18000, "centralGravity": 0.25,
+            "springLength": 160, "springConstant": 0.03,
+            "damping": 0.15, "avoidOverlap": 0.6,
         },
         "stabilization": {"iterations": 1000, "fit": True},
     },
-    "configure": {"enabled": True, "filter": "physics", "showButton": True},
+    "interaction": {
+        "hover": True,
+        "tooltipDelay": 150,
+        "navigationButtons": True,
+        "keyboard": {"enabled": True},
+    },
+    "layout": {"improvedLayout": True},
 }
 
 
@@ -128,7 +148,7 @@ class GraphExplorer:
         graph = SimilarityGraph(retrieved)
 
         # 1. Main graph HTML
-        main_html = self._render_main_graph(graph, prompt, initial_point_ids, output_dir)
+        main_html, document_colors = self._render_main_graph(graph, prompt, initial_point_ids, output_dir)
 
         # 2. Eigenvalue analysis
         base = os.path.join(output_dir, _generate_filename_from_prompt(prompt, ""))
@@ -166,17 +186,20 @@ class GraphExplorer:
             methods_html=methods_html,
             excel_path=excel_path,
             ranked_chunks=ranked_chunks,
+            document_colors=document_colors,
         )
 
     # ─── private rendering helpers ─────────────────────────────────
 
-    def _render_main_graph(self, graph: SimilarityGraph, prompt: str, initial_ids: set, output_dir: str) -> str:
+    def _render_main_graph(
+        self, graph: SimilarityGraph, prompt: str, initial_ids: set, output_dir: str,
+    ) -> tuple[str, dict[str, str]]:
         path = os.path.join(output_dir, _generate_filename_from_prompt(prompt, ".html"))
         net = Network(height="900px", width="100%", notebook=False, directed=False,
                       bgcolor="#222222", font_color="white")
         prompt_node_id = -1
         net.add_node(prompt_node_id, label="PROMPT", title=prompt, shape="box",
-                     color=PROMPT_NODE_COLOR, size=30)
+                     color=PROMPT_NODE_COLOR, size=PROMPT_NODE_SIZE)
 
         unique_files = sorted({p.payload.get("filename") for p in graph.points})
         file_color = {fn: DOCUMENT_COLORS[i % len(DOCUMENT_COLORS)] for i, fn in enumerate(unique_files)}
@@ -207,14 +230,14 @@ class GraphExplorer:
         vis_mask = vis_mask | vis_mask.T
         W_vis = np.where(vis_mask, graph.W, 0)
 
-        net.set_options(json.dumps(_PHYSICS))
+        net.set_options(json.dumps(_GRAPH_OPTIONS))
         rows, cols = np.where(np.triu(W_vis) > 0)
         edges = list(prompt_edges)
         for r, c in zip(rows, cols):
             edges.append((int(r), int(c), float(W_vis[r, c])))
         net.add_edges(edges)
         net.save_graph(path)
-        return path
+        return path, file_color
 
     def _render_methods_graph(
         self, graph: SimilarityGraph, prompt: str, initial_ids: set,
@@ -226,7 +249,7 @@ class GraphExplorer:
                       bgcolor="#222222", font_color="white")
         prompt_node_id = -1
         net.add_node(prompt_node_id, label="PROMPT", title=prompt, shape="box",
-                     color=PROMPT_NODE_COLOR, size=30)
+                     color=PROMPT_NODE_COLOR, size=PROMPT_NODE_SIZE)
 
         relevant = singular_indices | set(hinge_indices) | set(theta_indices)
         for idx in relevant:
@@ -241,7 +264,7 @@ class GraphExplorer:
             if idx in theta_indices: methods.append("Theta")
             title = (f"File: {p.payload.get('filename', 'N/A')}\n"
                      f"Method: {', '.join(methods)}\n\n{p.payload.get('text', 'N/A')}")
-            net.add_node(int(idx), label=str(idx), title=title, color=color, size=NODE_BASE_SIZE * 1.5)
+            net.add_node(int(idx), label=str(idx), title=title, color=color, size=NODE_MAX_SIZE)
 
         for idx in relevant:
             if graph.ordered_ids[idx] in initial_ids:
@@ -251,7 +274,7 @@ class GraphExplorer:
                     sim = graph.W[idx, other]
                     if sim > 0:
                         net.add_edge(int(idx), int(other), value=float(sim))
-        net.set_options(json.dumps(_PHYSICS))
+        net.set_options(json.dumps(_GRAPH_OPTIONS))
         net.save_graph(path)
         return path
 

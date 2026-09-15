@@ -83,6 +83,20 @@ if st.button("▶ generate graph", type="primary"):
                     ])
 
                     with tab_graph:
+                        legend_items = "".join(
+                            f'<span style="display:inline-flex;align-items:center;gap:0.35rem;'
+                            f'margin-right:1rem"><span style="width:0.8rem;height:0.8rem;'
+                            f'border-radius:50%;background:{color};display:inline-block"></span>'
+                            f'<span style="font-family:\'DM Mono\',monospace;font-size:0.72rem;'
+                            f'color:#2a1f18">{filename}</span></span>'
+                            for filename, color in art.document_colors.items()
+                        )
+                        st.markdown(
+                            f'<div class="info-box" style="line-height:2">'
+                            f'<strong style="color:#2a1f18">Documents:</strong>&nbsp; {legend_items}'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
                         with open(art.graph_html, "r", encoding="utf-8") as f:
                             st.components.v1.html(f.read(), height=900, scrolling=True)
 
